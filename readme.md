@@ -15,11 +15,10 @@
 - Docker network for communication with other containers
 
 ### Planned Endpoints
-    
+
 - `/dataset/version` - Get the latest version of a dataset
 - `/dataset/download` - Download a dataset
 - `/dataset/unzip` - Unzip a dataset
-- `/dataset/download` - Get a dataset
 - `/dataset/zip` - Zip a dataset
 - `/dataset/delete_raw` - Delete raw dataset files
 
