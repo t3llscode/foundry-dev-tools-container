@@ -16,18 +16,18 @@
 
 ### Planned Endpoints
 
-- `/dataset/version` - Get the latest version of a dataset
-- `/dataset/download` - Download a dataset
-- `/dataset/unzip` - Unzip a dataset
-- `/dataset/zip` - Zip a dataset
-- `/dataset/delete_raw` - Delete raw dataset files
+- `/dataset/versions` - Returns all available versions of a dataset
+- `/dataset/download` - Trigger the download of a dataset from the Foundry
+- `/dataset/unzip` - Trigger unzip of one or multiple datasets
+- `/dataset/zip` - Trigger zip of one or multiple datasets
+- `/dataset/delete_unzipped` - Trigger deletion of one or multiple unzipped dataset files
 
 #### Additional Endpoints (less priority)
 
-- `/dataset/delete_zip` - Delete zip dataset files
-- `/dataset/delete` - Delete dataset (both raw and zip files)
-- `/dataset/list` - List all datasets
-- `/dataset/info` - Get information about a dataset
+- `/dataset/delete_zipped` - Trigger deletion of one or multiple zipped dataset files
+- `/dataset/delete` - Trigger deletion of dataset (both zipped and unzipped files)
+- `/dataset/list` - Returns a list of all available datasets and their versions
+- `/dataset/info` - Returns information about one or multiple datasets
 
 ## Process: Update and Download Dataset (initiated by foreign API)
 
