@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # Copy the FastAPI application code into the container
 COPY ./t3_code ./t3_code
-COPY ./data ./data
+COPY ./datasets ./datasets
 COPY ./.vscode-server /root/.vscode-server
 
 # Don't expose the port the app runs on, because we use the names of the containers to communicate

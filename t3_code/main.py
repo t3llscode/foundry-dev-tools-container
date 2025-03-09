@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 
 app = FastAPI(
     title="Foundry DevTools Container",
@@ -9,13 +9,13 @@ app = FastAPI(
 # Include routers
 from t3_code.router.router_dataset import router as database_router
 
-for router in [database_router]:
-    app.include_router(router)
+for r in [database_router]:
+    app.include_router(r, flush=True)
 
 
 @app.get("/")
 async def root():
     return {
         "online": True,
-        "message": "Foundry DevTools Container API active!",
+        "message": "Foundry DevTools Container API is available!",
     }
