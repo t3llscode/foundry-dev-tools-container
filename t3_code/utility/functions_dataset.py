@@ -2,6 +2,8 @@ from typing import Dict, List, Any, Optional, Union
 import polars as pl
 import logging
 
+from t3_code.utility.foundry_utility import FoundryConnection
+
 logger = logging.getLogger(__name__)
 
 # - - - High Priority - - -
@@ -10,7 +12,7 @@ async def versions(req: dict) -> Any:
     """ Returns all available versions of a dataset """
     pass
 
-async def download(req: dict) -> Any:
+async def download(req: dict, foundry_connection: FoundryConnection) -> Any:
     """ Trigger the download of a dataset from the Foundry """
     pass
 

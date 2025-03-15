@@ -1,11 +1,15 @@
 from fastapi import APIRouter, Depends
 
 import t3_code.utility.functions_dataset as ds
+from t3_code.utility.foundry_utility import FoundryConnection
 
 router = APIRouter(
     prefix="/dataset",
     tags=["Dataset Endpoints"]
 )
+
+def get_foundry_connection():
+    return FoundryConnection()
 
 # - - - High Priority - - -
 
@@ -14,8 +18,8 @@ async def version(req: dict):
     return await ds.version(req)
 
 @router.post("/download")
-async def download(req: dict):
-    return await ds.download(req)
+async def download(req: dict, foundry_con: FoundryConnection = Depends(get_foundry_connection)):
+    return await ds.download(req, foundry_con)
 
 @router.post("/unzip")
 async def unzip(req: dict):

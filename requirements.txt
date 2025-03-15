@@ -10,3 +10,4 @@ polars==1.27.1              # Fast DataFrame library with Arrow backend
 pandas==2.2.3               # Data Analysis and Manipulation
 numpy==2.2.5                # Scientific Computing Package
 fastexcel==0.13.0           # Fast Excel Reader
+toml==0.10.2                # Parsing .toml files
