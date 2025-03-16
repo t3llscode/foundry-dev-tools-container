@@ -13,6 +13,12 @@ def read_docker_secret(secret_name):
         # Fallback for development environments or when not using Docker secrets
         return quote(os.environ.get(f'SECRET_{secret_name.upper()}', ''))
 
+def force_list(value):
+    """ Force a value to be a list if it's not None """
+    if value is None:
+        return []
+    return [value] if not isinstance(value, list) else value
+
 
 class BodyHandling:
 

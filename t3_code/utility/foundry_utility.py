@@ -2,6 +2,8 @@ import os
 import toml
 from foundry_dev_tools import FoundryContext
 
+from t3_code.utility.general_purpose import force_list
+
 class FoundryConnection:
 
     def __init__(self, config_secret_name: str = "foundry_dev_tools.toml", dataset_secret_name: str = "foundry_datasets.toml"):
@@ -48,3 +50,29 @@ class FoundryConnection:
             prefix = file.get("prefix", "ri.foundry.main.dataset.")
 
             return prefix, datasets
+
+    @staticmethod
+    def get_valid_uuids(self, names: str | list[str]):
+        """ Get valid UUIDs for the given names """
+        names = force_list(names)
+
+        name_uuid_pairs = {}
+        not_found = []
+
+        # Implement the method body here
+        for name in names:
+            if name in self.datasets.keys():
+                name_uuid_pairs[name] = self.datasets[name]
+            else:
+                not_found.append(name)
+
+        # Create special message for no valid UUIDs
+        message = ""
+        if not name_uuid_pairs:
+            message += "Not a single valid UUIDs found for your given name(s). "
+
+        # Create detailed error message for unknown datasets
+        if not_found:
+            message += f"Datasets {', '.join(not_found)} are unknown. Please only request existing datasets."
+
+        return name_uuid_pairs, message
