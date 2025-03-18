@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, WebSocket, WebSocketException
-
 from time import sleep
+import asyncio
+
 import t3_code.utility.functions_dataset as ds
 from t3_code.utility.foundry_utility import FoundryConnection
-import asyncio
 
 router = APIRouter(
     prefix="/dataset",
@@ -15,7 +15,7 @@ def get_foundry_connection():
 
 # - - - Full Sequences - - -
 
-@router.websocket("/get")
+@router.websocket("/test")
 async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get_foundry_connection)):
     
     await websocket.accept()
@@ -37,6 +37,11 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get
         sleep(5)
         print("STATE:", websocket.client_state, flush=True)
         print("FINALLY HAPPENED")
+
+
+@router.websocket("/get")
+async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get_foundry_connection)):
+    await ds.get(websocket, foundry_con)
 
 # - - - High Priority - - -
 
@@ -76,7 +81,7 @@ async def delete(req: dict):
 
 @router.post("/list")
 async def list(req: dict):
-    return await ds.list(req)
+    return await ds.list_datasets(req)
 
 @router.post("/info")
 async def info(req: dict):

@@ -51,7 +51,6 @@ class FoundryConnection:
 
             return prefix, datasets
 
-    @staticmethod
     def get_valid_uuids(self, names: str | list[str]):
         """ Get valid UUIDs for the given names """
         names = force_list(names)
