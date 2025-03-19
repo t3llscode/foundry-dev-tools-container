@@ -42,6 +42,9 @@ class FoundryConnection:
     @staticmethod
     def get_prefix_and_datasets(dataset_config_name: str = "foundry_datasets.toml") -> dict:
         """ Load dataset configuration from foundry_datasets.toml secret """
+
+        # TODO: check if datasets have '__' in their name as this is used as a separator in the file names
+
         with open(f"/run/secrets/{dataset_config_name}", "r") as secret_file:
             content = secret_file.read()
             file = toml.loads(content)
@@ -51,27 +54,27 @@ class FoundryConnection:
 
             return prefix, datasets
 
-    def get_valid_uuids(self, names: str | list[str]):
-        """ Get valid UUIDs for the given names """
+    def get_valid_rids(self, names: str | list[str]):
+        """ Get valid RIDs for the given names """
         names = force_list(names)
 
-        name_uuid_pairs = {}
+        name_rid_pairs = {}
         not_found = []
 
         # Implement the method body here
         for name in names:
             if name in self.datasets.keys():
-                name_uuid_pairs[name] = self.datasets[name]
+                name_rid_pairs[name] = self.datasets[name]
             else:
                 not_found.append(name)
 
-        # Create special message for no valid UUIDs
+        # Create special message for no valid RIDs
         message = ""
-        if not name_uuid_pairs:
-            message += "Not a single valid UUIDs found for your given name(s). "
+        if not name_rid_pairs:
+            message += "Not a single valid RIDs found for your given name(s). "
 
         # Create detailed error message for unknown datasets
         if not_found:
-            message += f"Datasets {', '.join(not_found)} are unknown. Please only request existing datasets."
+            message += f"Datasets '{'\', \''.join(not_found)}' are unknown. Please only request existing datasets."
 
-        return name_uuid_pairs, message
+        return name_rid_pairs, message
