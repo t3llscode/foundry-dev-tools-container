@@ -107,7 +107,7 @@ services:
     volumes:
       - ./foundry-dev-tools-container/t3_code:/app/t3_code  # allow for code adjustments
       - ./foundry-dev-tools-container/datasets:/app/datasets  # persistent dataset storage
-      - ./api-python/.vscode-server:/root/.vscode-server  # faster access to the container
+      - ./foundry-dev-tools-container/.vscode-server:/root/.vscode-server  # faster access to the container
     environment:
       - PYTHONPATH=/app/t3_code
     secrets:
