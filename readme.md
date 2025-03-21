@@ -97,7 +97,7 @@ secrets:
 # The Foundry DevTools Container
 services:
   fdt-container:
-    container_name: bullseye-fdt-container
+    container_name: project-fdt-container
     build:
     context: ./foundry-dev-tools-container
     dockerfile: Dockerfile
@@ -114,4 +114,41 @@ services:
       - fdt_config
       - fdt_datasets
     stop_grace_period: 0s
+```
+
+## Test
+
+The following script can be used to test the API endpoints of the Foundry DevTools Container. Make sure to execute this within a Docker network which has access to the `project-fdt-container` service - if you have no port exposed.
+
+```python
+import asyncio
+import websockets
+import json
+
+DATASET_URL = "ws://project-fdt-container:8000/dataset/get"  # If you expose the port: ws://localhost:8000/dataset/get
+DATASET_NAMES = ["Customer Demographics", "Transaction History"]
+
+async def test_websocket():
+    try:
+        async with websockets.connect(DATASET_URL) as websocket: 
+        print("Connected to WebSocket")
+        
+        # Send initial request with DATASET_NAMES
+        initial_request = {"names": DATASET_NAMES}
+        await websocket.send(json.dumps(initial_request))
+        print(f"Sent initial request: {initial_request}")
+        
+        # Listen for responses
+        async for message in websocket:
+            response = json.loads(message)
+            print(f"Received: {response}")
+            
+            # type final marks the last message in the stream
+            if response.get("type") == "final":
+                break
+            
+except Exception as e:
+    print(f"Error: {e}")
+
+asyncio.run(test_websocket())
 ```
