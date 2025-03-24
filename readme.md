@@ -147,8 +147,8 @@ async def test_websocket():
             if response.get("type") == "final":
                 break
             
-except Exception as e:
-    print(f"Error: {e}")
+    except Exception as e:
+        print(f"Error: {e}")
 
 asyncio.run(test_websocket())
 ```
