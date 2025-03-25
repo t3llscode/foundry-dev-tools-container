@@ -20,10 +20,9 @@ logger = logging.getLogger(__name__)
 
 async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
     """ Get a dataset from the Foundry, using Websocket for continous updates """
-
-    await websocket.accept()
-
     try:
+        await websocket.accept()
+        
         initial_req = await websocket.receive_json()
         names = initial_req.get("names", [])
 

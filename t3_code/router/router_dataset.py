@@ -17,9 +17,9 @@ def get_foundry_connection():
 
 @router.websocket("/test")
 async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get_foundry_connection)):
-    
-    await websocket.accept()
     try:
+        await websocket.accept()
+
         # Send one message per second for 5 seconds
         for i in range(5):
             # Send just the number (1-5)
