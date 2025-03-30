@@ -19,4 +19,4 @@ COPY ./.vscode-server /root/.vscode-server
 # EXPOSE 8000
 
 # Command to run the FastAPI application using Uvicorn
-CMD ["uvicorn", "t3_code.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--timeout-graceful-shutdown", "0"]
+CMD ["uvicorn", "t3_code.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "t3_code", "--timeout-graceful-shutdown", "0"]
