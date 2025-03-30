@@ -131,21 +131,21 @@ DATASET_NAMES = ["Customer Demographics", "Transaction History"]
 async def test_websocket():
     try:
         async with websockets.connect(DATASET_URL) as websocket: 
-        print("Connected to WebSocket")
-        
-        # Send initial request with DATASET_NAMES
-        initial_request = {"names": DATASET_NAMES}
-        await websocket.send(json.dumps(initial_request))
-        print(f"Sent initial request: {initial_request}")
-        
-        # Listen for responses
-        async for message in websocket:
-            response = json.loads(message)
-            print(f"Received: {response}")
+            print("Connected to WebSocket")
             
-            # type final marks the last message in the stream
-            if response.get("type") == "final":
-                break
+            # Send initial request with DATASET_NAMES
+            initial_request = {"names": DATASET_NAMES}
+            await websocket.send(json.dumps(initial_request))
+            print(f"Sent initial request: {initial_request}")
+            
+            # Listen for responses
+            async for message in websocket:
+                response = json.loads(message)
+                print(f"Received: {response}")
+                
+                # type final marks the last message in the stream
+                if response.get("type") == "final":
+                    break
             
     except Exception as e:
         print(f"Error: {e}")
