@@ -10,6 +10,8 @@ import shutil
 import hashlib
 import logging
 import json
+import pytz
+import aiofiles
 
 from t3_code.utility.foundry_utility import FoundryConnection
 
@@ -32,25 +34,38 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
             await send_message(websocket, "error", False, f"ERROR | {message}")
             return
 
+        from_dt = initial_req.get("from_dt", "2025-06-01")
+        to_dt = initial_req.get("to_dt", "2025-06-30")
+
         # Send acknowledgment with validated datasets
         await send_message(websocket, "update", True, "Connection established, starting operation...", add={"datasets": list(name_rid_pairs.keys())})
 
         coroutines = []
         for name, rid in name_rid_pairs.items():
-            coroutines.append(get_single_dataset(foundry_con, rid, name, "2025-06-01", "2025-06-30"))
+            coroutines.append(get_single_dataset(websocket, foundry_con, rid, name, from_dt, to_dt))
 
         print("GOING TO RUN", flush=True)
 
         # Run all dataset retrievals concurrently
         results = await asyncio.gather(*coroutines, return_exceptions=True)
 
-        print(results)
+        print(results, flush=True)
+
+        processed_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                # Log and add error information
+                print(f"Error in dataset retrieval: {str(result)}", flush=True)
+                processed_results.append({"error": str(result)})
+            else:
+                # Add successful result
+                processed_results.append({"success": True, "data_shape": result.shape if hasattr(result, "shape") else "Unknown"})
 
         print("RAN THROUGH", flush=True)
 
         # Send final overview message
-        await send_message(websocket, "final", True, "DONE", add={"datasets": results})
-            
+        await send_message(websocket, "final", True, "DONE", add={"datasets": f"{results}"})
+
     except WebSocketDisconnect:
         print("Client disconnected")
 
@@ -69,7 +84,7 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
 
 # - - - Versions - - -
 
-async def get_versions(rid: str) -> tuple[list[dict], str]:
+async def get_versions(rid: str, name: str) -> tuple[list[dict], str]:
     """
     Returns a list of dictionaries with the available versions of a dataset.
 
@@ -108,57 +123,71 @@ async def get_versions(rid: str) -> tuple[list[dict], str]:
     ```
     """
 
-    BASE_DIR = Path(f"/app/metadata/{rid}.json")
-    
+    BASE_DIR = Path(f"/app/datasets/metadata/{rid}.json")
     try:
         async with asyncio.Lock():
-            async with open(BASE_DIR, 'r') as file:
+            async with aiofiles.open(BASE_DIR, 'r') as file:
                 content = await file.read()
             data = json.loads(content)
             versions = data.get("versions", [])
-            message = f"Found {len(versions)} versions for dataset '{rid}'."
-    except FileNotFoundError:
+            message = f"{len(versions)} available versions found."
+            message = f"{len(versions)} available versions found."
+    except FileNotFoundError as e:
         versions = []
-        message = f"No metadata file found for dataset '{rid}'."
+        message = f"No metadata file found."
     except json.JSONDecodeError:
         versions = []
-        message = f"Invalid JSON format in metadata file for dataset '{rid}'."
+        message = f"Invalid JSON format in metadata file."
     except Exception as e:
         versions = []
-        message = f"Error reading metadata: {str(e)}"
+        message = f"Error reading metadata: {str(e)}"  # TODO: Check how to change this to not expose RIDs or sensible data to the Enduser
 
-    if versions:  # Sort versions descending (newest first) based on the last date in each version's dates list # TODO: check if necessary, as already trying to do this while writing to the file
-        versions.sort(key=lambda v: datetime.fromisoformat(v.get("dates", ["1970-01-01 00:00:00"])[-1]), reverse=True)
+    if versions:  # Sort versions descending (newest first) based on the last date in each version's dates list
+        # TODO: check if necessary, as already trying to do this while writing to the file
+        versions.sort(key=lambda v: datetime.fromisoformat(v.get("dates", [None])[-1]), reverse=True)
 
     return versions, message
 
 
-async def get_filtered_versions(rid: str, date_start: str, date_end: str = None) -> tuple[list[dict], str]:
+async def get_filtered_versions(websocket: WebSocket, rid: str, name: str, date_start: str, date_end: str = None) -> tuple[list[dict], str]:
     """ Returns the version object for a dataset filtered by date range """
 
-    versions, message = await get_versions(rid)
+    versions, message = await get_versions(rid, name)
 
     if not versions:
-        return [], f"No versions for dataset '{rid}'. Internal Message: {message}"
+        await websocket.send_json({
+            "type": "neutral",
+            "success": False,
+            "message": f"No available versions found for dataset '{name}'. {message}"
+        })
+        return [], f"No versions for dataset '{name}' with RID '{rid}'. {message}"
 
-    date_start_dt = datetime.fromisoformat(date_start)
-    date_end_dt = datetime.fromisoformat(date_end) if date_end else datetime.now()
+    date_start_dt = datetime.fromisoformat(date_start).replace(tzinfo=None)
+    # Ensure date_end_dt is a naive datetime to match with the ones from fromisoformat
+    date_end_dt = datetime.fromisoformat(date_end).replace(tzinfo=None) if date_end else datetime.now(pytz.UTC).replace(tzinfo=None)
 
     filtered_versions = [  # Filter versions based on the date range
         version for version in versions
-        if any(date_start_dt <= datetime.fromisoformat(date) <= date_end_dt for date in version.get("dates", []))
+        if any(date_start_dt <= datetime.fromisoformat(date).replace(tzinfo=None) <= date_end_dt for date in version.get("dates", []))
     ]
 
     if not filtered_versions:
-        return [], f"No versions between '{date_start}' and '{date_end}' found for dataset '{rid}'. Internal Message: {message}"
+        message2 = f"No versions between '{date_start}' and '{date_end}' found for dataset '{rid}'. Internal Message: {message}"
+    else:
+        message2 = f"Found {len(filtered_versions)} versions for dataset '{rid}' between '{date_start}' and '{date_end}'."
 
-    return filtered_versions, f"Found {len(filtered_versions)} versions for dataset '{rid}' between '{date_start}' and '{date_end}'."
+    await websocket.send_json({
+        "type": "update",
+        "success": True,
+        "message": message2
+    })
+    return filtered_versions, message2
 
 
-async def get_first_filtered_version(rid: str, date_start: str, date_end: str = None) -> tuple[Optional[dict], str]:
+async def get_first_filtered_version(websocket: WebSocket, rid: str, name: str, date_start: str, date_end: str = None) -> tuple[Optional[dict], str]:
     """ Returns the first version object for a dataset filtered by date range """
 
-    versions, message = await get_filtered_versions(rid, date_start, date_end)
+    versions, message = await get_filtered_versions(websocket, rid, name, date_start, date_end)
 
     if not versions:
         return None, message
@@ -173,9 +202,10 @@ async def load_datasets(sha256: str) -> pl.DataFrame | None:
 
     if unzipped_path.exists():
         try:
-            df = pl.read_csv(unzipped_path)
+            df = pl.read_csv(unzipped_path, infer_schema_length=0)
             return df
         except Exception as e:
+            print("ERROR IN load_datasets:", e, flush=True)
             return None
     else:
         return None
@@ -263,14 +293,28 @@ async def zip_dataset(sha256: str) -> bool:
 
 # - - - Download - - -
 
-async def download_dataset(foundry_con: FoundryConnection, rid: str, name: str) -> bool:
+async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection, rid: str, name: str) -> bool:
     """ Trigger the download of a dataset from the Foundry """
     
+    await websocket.send_json({
+        "type": "update",
+        "success": True,
+        "message": f"Downloading dataset '{name}' from Foundry..."  # TODO: add detection of progress and realize when download is not starting due to connection issues
+    })
+
     # Execute the Foundry SQL query asynchronously
     df = await asyncio.to_thread(
         foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
         f"SELECT * FROM `ri.foundry.main.dataset.{rid}`"  # TODO: make this use the prefix defined in the foundry_datasets.toml file
     )
+
+    await websocket.send_json({
+        "type": "update",
+        "success": True,
+        "message": f"Dataset '{name}' downloaded successfully.",
+        "df_type": f"{type(df)}",
+        "df": f"{df}"
+    })
     
     # CHECKSUM
     utf_data = df.to_json(orient='records').encode('utf-8')
@@ -283,21 +327,21 @@ async def download_dataset(foundry_con: FoundryConnection, rid: str, name: str) 
     # ZIP
     is_zipped = await zip_dataset(sha256)
     if not is_zipped:
-        return False
+        return False, sha256
     
     # METADATA
     version = {
         "sha256": sha256,
-        "dates": [datetime.now().isoformat()],
+        "dates": [datetime.now(pytz.UTC).replace(tzinfo=None).isoformat()],
         "unzipped": True,
         "zipped": True
     }
 
     is_added = await add_version_to_metadata(name, rid, version)
     if not is_added:
-        return False
+        return False, sha256
 
-    return True
+    return True, sha256
 
 # - - - Metadata Maintenance - - -
 
@@ -359,33 +403,55 @@ async def info(req: dict) -> Any:
 
 # - - - Core Processes - - -
 
-async def get_single_dataset(foundry_con: FoundryConnection, rid: str, name: str, date_start, date_end = None) -> Union[pl.DataFrame, None]:
+async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnection, rid: str, name: str, date_start, date_end = None) -> Union[pl.DataFrame, None]:
     """ Get a single dataset by name and uuid from the Foundry """
 
-    version, message = await get_first_filtered_version(rid, date_start, date_end)
+    print("IN: get_single_dataset", flush=True)
+
+    version, message = await get_first_filtered_version(websocket, rid, name, date_start, date_end)
+
+    print("HERE", flush=True)
 
     if version:
 
+        print("IN VERSION IF", flush=True)
+
         sha256 = version.get('sha256', None)
         if not sha256:
+            print("ERROR1", flush=True)
             raise ValueError(f"SHA256 not found in version data for dataset {rid}.")
         
         # UNZIP
         if not version.get("unzipped", False):
             is_unzipped = await unzip_dataset(version['sha256'])
             if not is_unzipped:
+                print("ERROR2", flush=True)
                 raise FileNotFoundError(f"Unzipped file for {rid} with SHA256 {version['sha256']} not found or could not be unzipped.")
 
-    # - NO VERSION FOUND -
-    is_downloaded = await download_dataset(foundry_con, rid, name)
-    if not is_downloaded:
-        raise FileNotFoundError(f"Dataset {rid} could not be downloaded or does not exist.")
+        print("OUT VERSION IF", flush=True)
+
+    else:
+
+        print("IN VERSION ELSE", flush=True)
+
+        # - NO VERSION FOUND -
+        is_downloaded, sha256 = await download_dataset(websocket, foundry_con, rid, name)
+        if not is_downloaded:
+            print("ERROR3", flush=True)
+            raise FileNotFoundError(f"Dataset {rid} could not be downloaded or does not exist.")
+
+        print("OUT VERSION ELSE", flush=True)
+
+    print("ABOUT TO GET DATASET", flush=True)
 
     # GET DATASET
     df = await load_datasets(sha256)
 
     if df is None:
+        print("ERROR4", flush=True)
         raise FileNotFoundError(f"Dataset {rid} with SHA256 {sha256} not found.")
+
+    print("OUT: get_single_dataset", flush=True)
 
     return df
 
