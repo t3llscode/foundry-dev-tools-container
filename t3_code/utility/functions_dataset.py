@@ -64,7 +64,7 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
         print("RAN THROUGH", flush=True)
 
         # Send final overview message
-        await send_message(websocket, "final", True, "DONE", add={"datasets": f"{results}"})
+        await send_message(websocket, "final", True, "DONE", add={"datasets": f"{results[0]}"})
 
     except WebSocketDisconnect:
         print("Client disconnected")
@@ -453,7 +453,7 @@ async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnectio
 
     print("OUT: get_single_dataset", flush=True)
 
-    return df
+    return sha256
 
 # - - - Utility Functions - - -
 

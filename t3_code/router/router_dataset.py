@@ -1,6 +1,9 @@
-from fastapi import APIRouter, Depends, WebSocket, WebSocketException
+from fastapi import APIRouter, Depends, WebSocket, WebSocketException, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
+from pathlib import Path
 from time import sleep
 import asyncio
+import aiofiles
 
 import t3_code.utility.functions_dataset as ds
 from t3_code.utility.foundry_utility import FoundryConnection
@@ -42,6 +45,46 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get
 @router.websocket("/get")
 async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get_foundry_connection)):
     await ds.get(websocket, foundry_con)
+
+# - - - Download Endpoints - - -
+
+@router.get("/download/zip/{sha256}")
+async def download_zip(sha256: str):
+    """Download zipped dataset by SHA256 with streaming"""
+    zip_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+    
+    if not zip_path.exists():
+        raise HTTPException(status_code=404, detail="Zipped dataset not found")
+    
+    async def generate():
+        async with aiofiles.open(zip_path, 'rb') as file:
+            while chunk := await file.read(8192):  # 8KB chunks
+                yield chunk
+    
+    return StreamingResponse(
+        generate(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={sha256}.zip"}
+    )
+
+@router.get("/download/csv/{sha256}")
+async def download_csv(sha256: str):
+    """Download unzipped CSV dataset by SHA256 with streaming"""
+    csv_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    
+    if not csv_path.exists():
+        raise HTTPException(status_code=404, detail="CSV dataset not found")
+    
+    async def generate():
+        async with aiofiles.open(csv_path, 'rb') as file:
+            while chunk := await file.read(8192):  # 8KB chunks
+                yield chunk
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={sha256}.csv"}
+    )
 
 # - - - High Priority - - -
 
