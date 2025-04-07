@@ -3,6 +3,7 @@ from fastapi import FastAPI
 app = FastAPI(
     title="Foundry DevTools Container",
     description="API for providing Foundry Datasets",
+    root_path="/fdtc-api",
     version="1.0.0"
 )
 

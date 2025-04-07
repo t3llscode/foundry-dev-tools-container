@@ -48,6 +48,8 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection = Depends(get
 
 # - - - Download Endpoints - - -
 
+CHUNKSIZE = 32 * 1024 * 1024  # 32MB # Allow to provide this in a config file or something
+
 @router.get("/download/zip/{sha256}")
 async def download_zip(sha256: str):
     """Download zipped dataset by SHA256 with streaming"""
@@ -58,7 +60,7 @@ async def download_zip(sha256: str):
     
     async def generate():
         async with aiofiles.open(zip_path, 'rb') as file:
-            while chunk := await file.read(8192):  # 8KB chunks
+            while chunk := await file.read(CHUNKSIZE):  # chunksize
                 yield chunk
     
     return StreamingResponse(
@@ -77,7 +79,7 @@ async def download_csv(sha256: str):
     
     async def generate():
         async with aiofiles.open(csv_path, 'rb') as file:
-            while chunk := await file.read(8192):  # 8KB chunks
+            while chunk := await file.read(CHUNKSIZE):  # chunksize
                 yield chunk
     
     return StreamingResponse(
