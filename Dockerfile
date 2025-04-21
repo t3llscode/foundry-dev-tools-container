@@ -18,5 +18,5 @@ COPY ./.vscode-server /root/.vscode-server
 # Don't expose the port the app runs on, because we use the names of the containers to communicate
 # EXPOSE 8000
 
-# Command to run the FastAPI application using Uvicorn
-CMD ["uvicorn", "t3_code.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "t3_code", "--timeout-graceful-shutdown", "0"]
+# Command to run the FastAPI application (uses Uvicorn internally)
+CMD ["python", "t3_code/main.py"]
