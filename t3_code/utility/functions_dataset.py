@@ -16,6 +16,9 @@ import aiofiles
 from t3_code.utility.foundry_utility import FoundryConnection
 
 
+DOWNLOAD_BATCHSIZE = 250000  # Number of rows to download in each batch
+
+
 logger = logging.getLogger(__name__)
 
 # - - - Full Sequences - - -
@@ -302,46 +305,111 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
         "message": f"Downloading dataset '{name}' from Foundry..."  # TODO: add detection of progress and realize when download is not starting due to connection issues
     })
 
-    # Execute the Foundry SQL query asynchronously
-    df = await asyncio.to_thread(
-        foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
-        f"SELECT * FROM `ri.foundry.main.dataset.{rid}`"  # TODO: make this use the prefix defined in the foundry_datasets.toml file
-    )
+    try:
+        # - - - Execute the Foundry SQL query asynchronously - - -
 
-    await websocket.send_json({
-        "type": "update",
-        "success": True,
-        "message": f"Dataset '{name}' downloaded successfully.",
-        "df_type": f"{type(df)}",
-        "df": f"{df}"
-    })
-    
-    # CHECKSUM
-    utf_data = df.to_json(orient='records').encode('utf-8')
-    sha256 = hashlib.sha256(utf_data).hexdigest()
-    
-    # SAVE
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-    df.to_csv(unzipped_path, index=False, encoding='utf-8')
-    
-    # ZIP
-    is_zipped = await zip_dataset(sha256)
-    if not is_zipped:
-        return False, sha256
-    
-    # METADATA
-    version = {
-        "sha256": sha256,
-        "dates": [datetime.now(pytz.UTC).replace(tzinfo=None).isoformat()],
-        "unzipped": True,
-        "zipped": True
-    }
+        df_count = await asyncio.to_thread(
+            foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+            f"SELECT COUNT(*) FROM `ri.foundry.main.dataset.{rid}`"  # TODO: make this use the prefix defined in the foundry_datasets.toml file
+        )
 
-    is_added = await add_version_to_metadata(name, rid, version)
-    if not is_added:
-        return False, sha256
+        # Extract row count from the COUNT(*) query result (returns pandas DataFrame)
+        try:
+            row_count = int(df_count.iloc[0, 0])
+        except (ValueError, IndexError):
+            row_count = 0
 
-    return True, sha256
+        # End if no rows found
+        if row_count == 0:
+            await websocket.send_json({
+                "type": "final",
+                "success": False,
+                "message": f"No rows found for dataset '{name}'."
+            })
+            return False, ""
+
+        # Determine batches and start download
+
+        num_batches = (row_count // DOWNLOAD_BATCHSIZE) + 1
+
+        await websocket.send_json({
+            "type": "update",
+            "success": True,
+            "message": f"Found {row_count} rows in dataset '{name}', starting download in {num_batches} batch(es)."
+        })
+
+        # Download entire dataset at once (Foundry SQL doesn't support OFFSET)
+        # If the dataset is too large, this will need to be handled differently
+        await websocket.send_json({
+            "type": "update",
+            "success": True,
+            "message": f"Downloading all {row_count} rows for dataset '{name}'..."
+        })
+
+        df = await asyncio.to_thread(
+            foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+            f"SELECT * FROM `ri.foundry.main.dataset.{rid}`"  # TODO: make this use the prefix defined in the foundry_datasets.toml file
+        )
+
+        await websocket.send_json({
+            "type": "update",
+            "success": True,
+            "message": f"Dataset '{name}' downloaded successfully. Writing to disk..."
+        })
+
+        # Create a temporary file path for writing
+        tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
+        df.write_csv(tmp_csv_path)
+
+        await websocket.send_json({
+            "type": "update",
+            "success": True,
+            "message": f"All batches downloaded and written to temporary file for dataset '{name}'. Calculating checksum..."
+        })
+
+        # CHECKSUM - Calculate from file directly
+        sha256_hash = hashlib.sha256()
+        async with aiofiles.open(tmp_csv_path, 'rb') as f:
+            while chunk := await f.read(8192):
+                sha256_hash.update(chunk)
+        sha256 = sha256_hash.hexdigest()
+        
+        # RENAME - Rename temporary file to final name with SHA256
+        unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+        tmp_csv_path.rename(unzipped_path)
+
+        await websocket.send_json({
+            "type": "update",
+            "success": True,
+            "message": f"Dataset '{name}' renamed and saved successfully as {sha256[:8]}[...].csv"
+        })
+
+        # ZIP
+        is_zipped = await zip_dataset(sha256)
+        if not is_zipped:
+            return False, sha256
+        
+        # METADATA
+        version = {
+            "sha256": sha256,
+            "dates": [datetime.now(pytz.UTC).replace(tzinfo=None).isoformat()],
+            "unzipped": True,
+            "zipped": True
+        }
+
+        is_added = await add_version_to_metadata(name, rid, version)
+        if not is_added:
+            return False, sha256
+
+        return True, sha256
+
+    except Exception as e:
+        traceback.print_exc()
+        await websocket.send_json({
+            "type": "error",
+            "message": f"An error occurred while processing dataset '{name}': {str(e)}"
+        })
+        return False, ""
 
 # - - - Metadata Maintenance - - -
 
