@@ -2,7 +2,9 @@ from typing import Dict, List, Any, Optional, Union
 from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime
 from pathlib import Path
+import os
 import polars as pl
+import pandas as pd
 import traceback
 import asyncio
 import zipfile
@@ -12,11 +14,13 @@ import logging
 import json
 import pytz
 import aiofiles
+import tempfile
+from contextlib import suppress
 
 from t3_code.utility.foundry_utility import FoundryConnection
 
 
-DOWNLOAD_BATCHSIZE = 250000  # Number of rows to download in each batch
+DOWNLOAD_BATCHSIZE = 1000000  # Rows per batch, needs id column in dataset
 
 
 logger = logging.getLogger(__name__)
@@ -25,9 +29,13 @@ logger = logging.getLogger(__name__)
 
 async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
     """ Get a dataset from the Foundry, using Websocket for continous updates """
+    keepalive_task: Optional[asyncio.Task] = None
+
     try:
         await websocket.accept()
-        
+        setattr(websocket, "_send_lock", asyncio.Lock())
+        keepalive_task = asyncio.create_task(_websocket_keepalive(websocket))
+
         initial_req = await websocket.receive_json()
         names = initial_req.get("names", [])
 
@@ -43,31 +51,20 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
         # Send acknowledgment with validated datasets
         await send_message(websocket, "update", True, "Connection established, starting operation...", add={"datasets": list(name_rid_pairs.keys())})
 
-        coroutines = []
+        results = []
         for name, rid in name_rid_pairs.items():
-            coroutines.append(get_single_dataset(websocket, foundry_con, rid, name, from_dt, to_dt))
-
-        print("GOING TO RUN", flush=True)
-
-        # Run all dataset retrievals concurrently
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
-
-        print(results, flush=True)
-
-        processed_results = []
-        for result in results:
-            if isinstance(result, Exception):
-                # Log and add error information
-                print(f"Error in dataset retrieval: {str(result)}", flush=True)
-                processed_results.append({"error": str(result)})
-            else:
-                # Add successful result
-                processed_results.append({"success": True, "data_shape": result.shape if hasattr(result, "shape") else "Unknown"})
+            try:
+                result = await get_single_dataset(websocket, foundry_con, rid, name, from_dt, to_dt)
+                results.append(result)
+                print(f"Successfully processed dataset: {name}", flush=True)
+            except Exception as e:
+                print(f"Error in dataset retrieval for {name}: {str(e)}", flush=True)
+                results.append(e)
 
         print("RAN THROUGH", flush=True)
 
         # Send final overview message
-        await send_message(websocket, "final", True, "DONE", add={"datasets": f"{results[0]}"})
+        await send_message(websocket, "final", True, "DONE", add={"datasets": f"{results[0] if results else 'No results'}"})
 
     except WebSocketDisconnect:
         print("Client disconnected")
@@ -81,6 +78,14 @@ async def get(websocket: WebSocket, foundry_con: FoundryConnection) -> Any:
 
         await send_message(websocket, "final", False, f"ERROR | {e}")
         await websocket.close(code=1008)  # Policy violation code
+
+    finally:
+        if keepalive_task:
+            keepalive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await keepalive_task
+        if hasattr(websocket, "_send_lock"):
+            delattr(websocket, "_send_lock")
 
 
 # - - - - - High Priority - - - - -
@@ -203,96 +208,31 @@ async def load_datasets(sha256: str) -> pl.DataFrame | None:
 
     unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
 
-    if unzipped_path.exists():
-        try:
-            df = pl.read_csv(unzipped_path, infer_schema_length=0)
-            return df
-        except Exception as e:
-            print("ERROR IN load_datasets:", e, flush=True)
-            return None
-    else:
+    if not unzipped_path.exists():
+        return None
+
+    try:
+        df = await asyncio.to_thread(pl.read_csv, unzipped_path, infer_schema_length=0)
+        return df
+    except Exception as e:
+        print("ERROR IN load_datasets:", e, flush=True)
         return None
     
 # - - - Unzip Datasets - - -
 
 async def unzip_dataset(sha256: str) -> bool:
-    """ 
-    Unzips a dataset zip file to a CSV file in the unzipped directory.
-    
-    Args:
-        sha256: The SHA256 hash identifier for the dataset
-        
-    Returns:
-       True if successfully unzipped, False if file doesn't exist or on error
+    """Unzip large archives without blocking the event loop."""
 
-    Process:
-        1. Checks if the zip file exists at the expected path
-        2. Creates a temporary extraction directory
-        3. Extracts all files from the zip archive
-        4. Finds the first CSV file in the extracted contents
-        5. Moves the CSV to the unzipped directory with the sha256 identifier
-        6. Cleans up the temporary directory
-    """
-    
-    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-    temp_extract_dir = Path(f"/app/datasets/temp_extract_{sha256}")
+    return await asyncio.to_thread(_unzip_dataset_sync, sha256)
 
-    if not zipped_path.exists() or zipped_path.suffix != '.zip':
-        return False
-
-    try:
-        temp_extract_dir.mkdir(exist_ok=True)
-        
-        with zipfile.ZipFile(zipped_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_extract_dir)
-        
-        csv_files = list(temp_extract_dir.glob("**/*.csv"))
-        
-        if not csv_files:
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-            return False
-        
-        source_csv = csv_files[0]
-        unzipped_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(source_csv), str(unzipped_path))
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
-        
-        return True
-        
-    except Exception as e:
-        if temp_extract_dir.exists():
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-        return False
-    
 
 async def zip_dataset(sha256: str) -> bool:
-    """ 
-    Zips a dataset CSV file into a zip file in the zipped directory.
-    
-    Args:
-        sha256: The SHA256 hash identifier for the dataset
-    Returns:
-        True if successfully zipped, False if file doesn't exist or on error
-    Process:
-        1. Checks if the CSV file exists at the expected path
-        2. Creates a zip file in the zipped directory with the sha256 identifier
-        3. Writes the CSV file into the zip archive
-    """
-    
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+    """Zip large CSVs without blocking the event loop."""
 
-    if not unzipped_path.exists() or unzipped_path.suffix != '.csv':
-        return False
+    return await asyncio.to_thread(_zip_dataset_sync, sha256)
 
-    try:
-        with zipfile.ZipFile(zipped_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(unzipped_path, arcname=f"{sha256}.csv")
-        return True
-    
-    except Exception as e:
-        return False
+
+
 
 # - - - Download - - -
 
@@ -328,67 +268,121 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
             })
             return False, ""
 
-        # Determine batches and start download
+        # CHECK IF ROWS > BATCH_SIZE AND COLUMN ID EXISTS
 
-        num_batches = (row_count // DOWNLOAD_BATCHSIZE) + 1
+        incremental_download = False
 
-        await websocket.send_json({
-            "type": "update",
-            "success": True,
-            "message": f"Found {row_count} rows in dataset '{name}', starting download in {num_batches} batch(es)."
-        })
+        if row_count > DOWNLOAD_BATCHSIZE:
+            df: pd.DataFrame = await asyncio.to_thread(  # get a row for columns
+                foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+                f"SELECT * FROM `ri.foundry.main.dataset.{rid}` LIMIT 1"
+            )
 
-        # Download entire dataset at once (Foundry SQL doesn't support OFFSET)
-        # If the dataset is too large, this will need to be handled differently
-        await websocket.send_json({
-            "type": "update",
-            "success": True,
-            "message": f"Downloading all {row_count} rows for dataset '{name}'..."
-        })
+            print(df, flush=True)
 
-        df = await asyncio.to_thread(
-            foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
-            f"SELECT * FROM `ri.foundry.main.dataset.{rid}`"  # TODO: make this use the prefix defined in the foundry_datasets.toml file
-        )
+            if not df.empty and "id" in df.columns:
+                incremental_download = True
 
-        await websocket.send_json({
-            "type": "update",
-            "success": True,
-            "message": f"Dataset '{name}' downloaded successfully. Writing to disk..."
-        })
+        # INCREMENTAL DOWNLOAD
+        if incremental_download:
 
-        # Create a temporary file path for writing
-        tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
-        df.write_csv(tmp_csv_path)
+            # Determine batches and start download
+            num_batches = (row_count // DOWNLOAD_BATCHSIZE) + 1
 
-        await websocket.send_json({
-            "type": "update",
-            "success": True,
-            "message": f"All batches downloaded and written to temporary file for dataset '{name}'. Calculating checksum..."
-        })
+            await websocket.send_json({
+                "type": "update",
+                "success": True,
+                "message": f"Found {row_count} rows in dataset '{name}', starting download in {num_batches} batch(es)."
+            })
 
-        # CHECKSUM - Calculate from file directly
-        sha256_hash = hashlib.sha256()
-        async with aiofiles.open(tmp_csv_path, 'rb') as f:
-            while chunk := await f.read(8192):
-                sha256_hash.update(chunk)
-        sha256 = sha256_hash.hexdigest()
-        
-        # RENAME - Rename temporary file to final name with SHA256
-        unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-        tmp_csv_path.rename(unzipped_path)
+            for i in range(num_batches):
+                await websocket.send_json({
+                    "type": "update",
+                    "success": True,
+                    "message": f"Downloading batch {i + 1} of {num_batches} for dataset '{name}'..."
+                })
 
-        await websocket.send_json({
-            "type": "update",
-            "success": True,
-            "message": f"Dataset '{name}' renamed and saved successfully as {sha256[:8]}[...].csv"
-        })
+                offset = i * DOWNLOAD_BATCHSIZE
+                limit = DOWNLOAD_BATCHSIZE
+                
+                df_batch: pd.DataFrame = await asyncio.to_thread(
+                    foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+                    f"SELECT * FROM `ri.foundry.main.dataset.{rid}` WHERE id > {offset} AND id <= {offset + limit}"
+                )
+
+                # Create a temporary file path for writing (only once)
+                if i == 0:
+                    tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
+                    # Write first batch with headers
+                    df_batch.to_csv(tmp_csv_path, index=False)
+                else:
+                    # Append subsequent batches without headers
+                    with open(tmp_csv_path, 'a', encoding='utf-8') as f:
+                        df_batch.to_csv(f, index=False, header=False)
+
+            await websocket.send_json({
+                "type": "update",
+                "success": True,
+                "message": f"All batches downloaded and written to temporary file for dataset '{name}'. Calculating checksum..."
+            })
+
+        # ALL AT ONCE DOWNLOAD
+        else:
+
+            await websocket.send_json({
+                "type": "update",
+                "success": True,
+                "message": f"Downloading all {row_count} rows for dataset '{name}'..."
+            })
+
+            df = await asyncio.to_thread(
+                foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+                f"SELECT * FROM `ri.foundry.main.dataset.{rid}`"
+            )
+
+            await websocket.send_json({
+                "type": "update",
+                "success": True,
+                "message": f"Dataset '{name}' downloaded successfully. Writing to disk..."
+            })
+
+            # Create a temporary file path for writing
+            tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
+            with open(tmp_csv_path, 'w', encoding='utf-8') as f:
+                df.to_csv(f, index=False)
+
+            await websocket.send_json({
+                "type": "update",
+                "success": True,
+                "message": f"All batches downloaded and written to temporary file for dataset '{name}'. Calculating checksum..."
+            })
+
+        # CHECKSUM
+        sha256 = await asyncio.to_thread(_compute_file_sha256, tmp_csv_path)
+
+        # RENAME
+        new_csv_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+        new_csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if new_csv_path.exists():
+            try:
+                await asyncio.to_thread(new_csv_path.unlink)
+            except FileNotFoundError:
+                pass
+
+        await asyncio.to_thread(shutil.move, str(tmp_csv_path), str(new_csv_path))
 
         # ZIP
         is_zipped = await zip_dataset(sha256)
         if not is_zipped:
+            await send_message(
+                websocket,
+                "update",
+                False,
+                f"Failed to zip dataset '{name}'."
+            )
             return False, sha256
-        
+
         # METADATA
         version = {
             "sha256": sha256,
@@ -399,23 +393,111 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
 
         is_added = await add_version_to_metadata(name, rid, version)
         if not is_added:
+            await send_message(
+                websocket,
+                "update",
+                False,
+                f"Failed to update metadata for dataset '{name}'."
+            )
             return False, sha256
 
         return True, sha256
 
     except Exception as e:
-        traceback.print_exc()
-        await websocket.send_json({
-            "type": "error",
-            "message": f"An error occurred while processing dataset '{name}': {str(e)}"
-        })
+        logger.exception("Failed to download dataset %s (%s)", name, rid)
+        await send_message(
+            websocket,
+            "update",
+            False,
+            f"Failed to download dataset '{name}'. {e}"
+        )
         return False, ""
+
+# - - - Download - - -
+
+# async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection, rid: str, name: str) -> tuple[bool, str]:
+#     """Trigger the download of a dataset from the Foundry and persist it locally."""
+
+#     await send_message(
+#         websocket,
+#         "update",
+#         True,
+#         f"Downloading dataset '{name}' from Foundry..."
+#     )
+
+#     try:
+#         df = await asyncio.to_thread(
+#             foundry_con.foundry_context.foundry_sql_server.query_foundry_sql,
+#             f"SELECT * FROM `ri.foundry.main.dataset.{rid}`",
+#             timeout=3600
+#         )
+#     except Exception as exc:
+#         logger.exception("Failed to download dataset %s (%s)", name, rid)
+#         await send_message(
+#             websocket,
+#             "update",
+#             False,
+#             f"Failed to download dataset '{name}'. {exc}"
+#         )
+#         return False, ""
+
+#     dataset_meta = _get_dataframe_metadata(df)
+
+#     temp_path: Optional[Path] = None
+#     file_size_bytes: Optional[int] = None
+#     try:
+#         temp_path = await asyncio.to_thread(_write_dataframe_to_temp_csv, df)
+#         sha256 = await asyncio.to_thread(_compute_file_sha256, temp_path)
+
+#         unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+#         unzipped_path.parent.mkdir(parents=True, exist_ok=True)
+
+#         if unzipped_path.exists():
+#             try:
+#                 await asyncio.to_thread(unzipped_path.unlink)
+#             except FileNotFoundError:
+#                 pass
+
+#         await asyncio.to_thread(shutil.move, str(temp_path), str(unzipped_path))
+#         file_size_bytes = await asyncio.to_thread(_get_file_size, unzipped_path)
+
+#     except Exception as exc:
+#         logger.exception("Failed to persist dataset %s (%s)", name, rid)
+#         await send_message(
+#             websocket,
+#             "update",
+#             False,
+#             f"Failed to persist dataset '{name}'. {exc}"
+#         )
+#         if temp_path and temp_path.exists():
+#             try:
+#                 temp_path.unlink()
+#             except FileNotFoundError:
+#                 pass
+#         return False, ""
+#     finally:
+#         del df
+
+#     await send_message(
+#         websocket,
+#         "update",
+#         True,
+#         f"Dataset '{name}' downloaded successfully.",
+#         add={
+#             "rows": dataset_meta.get("rows"),
+#             "columns": dataset_meta.get("columns"),
+#             "approx_size": _human_readable_size(file_size_bytes)
+#         }
+#     )
+
+    
 
 # - - - Metadata Maintenance - - -
 
 async def add_metadata(name: str, rid: str, versions: list[dict] = []):
 
     metadata_path = Path(f"/app/datasets/metadata/{rid}.json")
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not metadata_path.exists():
         metadata_path.write_text(json.dumps({"name": name, "rid": rid, "versions": versions}, indent=4))
@@ -512,10 +594,8 @@ async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnectio
 
     print("ABOUT TO GET DATASET", flush=True)
 
-    # GET DATASET
-    df = await load_datasets(sha256)
-
-    if df is None:
+    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    if not unzipped_path.exists():
         print("ERROR4", flush=True)
         raise FileNotFoundError(f"Dataset {rid} with SHA256 {sha256} not found.")
 
@@ -525,14 +605,158 @@ async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnectio
 
 # - - - Utility Functions - - -
 
+def _write_dataframe_to_temp_csv(df: Any) -> Path:
+    temp_dir = Path("/app/datasets/tmp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    fd, temp_path = tempfile.mkstemp(dir=temp_dir, suffix=".csv")
+    os.close(fd)
+    path_obj = Path(temp_path)
+
+    try:
+        destination = str(path_obj)
+        if isinstance(df, pl.DataFrame):
+            df.write_csv(destination)
+        elif hasattr(df, "to_csv"):
+            try:
+                df.to_csv(destination, index=False, encoding="utf-8")
+            except TypeError:
+                df.to_csv(destination, index=False)
+        else:
+            raise TypeError(f"Unsupported dataframe type: {type(df)}")
+    except Exception:
+        if path_obj.exists():
+            try:
+                path_obj.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+    return path_obj
+
+
+def _compute_file_sha256(file_path: Path) -> str:
+    hash_obj = hashlib.sha256()
+    with open(file_path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hash_obj.update(chunk)
+    return hash_obj.hexdigest()
+
+
+def _get_file_size(file_path: Path) -> int:
+    return file_path.stat().st_size
+
+
+def _human_readable_size(num_bytes: int | None) -> str:
+    if num_bytes is None:
+        return "unknown"
+
+    step_unit = 1024.0
+    size = float(num_bytes)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < step_unit:
+            return f"{size:.2f} {unit}"
+        size /= step_unit
+    return f"{size:.2f} PB"
+
+
+def _get_dataframe_metadata(df: Any) -> dict[str, Optional[int]]:
+    try:
+        rows = len(df)
+    except Exception:
+        rows = None
+
+    columns = None
+    if isinstance(df, pl.DataFrame):
+        columns = len(df.columns)
+    elif hasattr(df, "columns"):
+        try:
+            columns = len(df.columns)
+        except Exception:
+            columns = None
+
+    return {"rows": rows, "columns": columns}
+
+
+async def _websocket_keepalive(websocket: WebSocket, interval: int = 50) -> None:
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await send_message(websocket, "keepalive", True, "Heartbeat - still processing, please keep waiting...")
+            except Exception:
+                logger.debug("Keepalive send failed; stopping keepalive loop.", exc_info=True)
+                break
+    except asyncio.CancelledError:
+        raise
+
+
+def _unzip_dataset_sync(sha256: str) -> bool:
+    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    temp_extract_dir = Path(f"/app/datasets/temp_extract_{sha256}")
+
+    if not zipped_path.exists() or zipped_path.suffix != ".zip":
+        return False
+
+    try:
+        temp_extract_dir.mkdir(exist_ok=True)
+
+        with zipfile.ZipFile(zipped_path, "r") as zip_ref:
+            zip_ref.extractall(temp_extract_dir)
+
+        csv_files = list(temp_extract_dir.glob("**/*.csv"))
+        if not csv_files:
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+            return False
+
+        source_csv = csv_files[0]
+        unzipped_path.parent.mkdir(parents=True, exist_ok=True)
+        if unzipped_path.exists():
+            unzipped_path.unlink()
+        shutil.move(str(source_csv), str(unzipped_path))
+
+        return True
+    except Exception:
+        logger.exception("Failed to unzip dataset %s", sha256)
+        return False
+    finally:
+        if temp_extract_dir.exists():
+            shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+
+def _zip_dataset_sync(sha256: str) -> bool:
+    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+
+    if not unzipped_path.exists() or unzipped_path.suffix != ".csv":
+        return False
+
+    try:
+        zipped_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zipped_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(unzipped_path, arcname=f"{sha256}.csv")
+        return True
+    except Exception:
+        logger.exception("Failed to zip dataset %s", sha256)
+        return False
+
+
 async def send_message(websocket: WebSocket, type: str, is_success: bool, message: str, add: dict = None) -> None:
     """ Send a message to the WebSocket client """
-    await websocket.send_json({
+    payload = {
         "type": type,
         "success": is_success,
         "message": message,
         **(add or {})
-    })
+    }
+
+    lock: Optional[asyncio.Lock] = getattr(websocket, "_send_lock", None)
+    if lock:
+        async with lock:
+            await websocket.send_json(payload)
+    else:
+        await websocket.send_json(payload)
 
 # - - - Cancellation - - - (implement later)
 

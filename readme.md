@@ -9,48 +9,71 @@
 
 ### Technical Details
 
-- Config file for mapping names to dataset RIDs
-- Redis channel for communication with docker network
+- Config file for mapping names to dataset RIDs (`foundry_datasets.toml`)
+- **WebSocket** for real-time communication and progress updates during dataset operations
+- **HTTP streaming endpoints** for downloading dataset files (zip/csv)
 - API for dataset management / provisioning
 - Docker network for communication with other containers
+- Internal port: **8888** (accessible via container name on docker network)
 
-### Planned Endpoints
+### Endpoints
 
-- `/dataset/versions` - Returns all available versions of a dataset
-- `/dataset/download` - Trigger the download of a dataset from the Foundry
-- `/dataset/unzip` - Trigger unzip of one or multiple datasets
-- `/dataset/zip` - Trigger zip of one or multiple datasets
-- `/dataset/delete_unzipped` - Trigger deletion of one or multiple unzipped dataset files
+#### WebSocket Endpoints (Real-time Communication)
+
+- `WS /dataset/get` - Full dataset retrieval workflow with live progress updates
+- `WS /dataset/test` - Test WebSocket connection
+
+#### HTTP Streaming Downloads
+
+- `GET /dataset/download/zip/{sha256}` - Download zipped dataset by SHA256 checksum
+- `GET /dataset/download/csv/{sha256}` - Download CSV dataset by SHA256 checksum
+
+#### REST Endpoints (Dataset Management)
+
+- `POST /dataset/versions` - Returns all available versions of a dataset
+- `POST /dataset/download` - Trigger the download of a dataset from the Foundry
+- `POST /dataset/unzip` - Trigger unzip of one or multiple datasets
+- `POST /dataset/zip` - Trigger zip of one or multiple datasets
+- `POST /dataset/delete/raw` - Trigger deletion of one or multiple unzipped dataset files
 
 #### Additional Endpoints (less priority)
 
-- `/dataset/delete_zipped` - Trigger deletion of one or multiple zipped dataset files
-- `/dataset/delete` - Trigger deletion of dataset (both zipped and unzipped files)
-- `/dataset/list` - Returns a list of all available datasets and their versions
-- `/dataset/info` - Returns information about one or multiple datasets
+- `POST /dataset/delete/zip` - Trigger deletion of one or multiple zipped dataset files
+- `POST /dataset/delete` - Trigger deletion of dataset (both zipped and unzipped files)
+- `POST /dataset/list` - Returns a list of all available datasets and their versions
+- `POST /dataset/info` - Returns information about one or multiple datasets
 
 ## Process: Update and Download Dataset (initiated by foreign API)
 
-  - External API requests /dataset_version for a dataset (name is given by the API, an mapping inside the foundry-dev-tools container is going to map the RID to it)
+  1. External API opens a **WebSocket connection** to `/dataset/get`
 
-  - External API checks whether the dataset is new enough.
+  2. External API sends a JSON message with dataset names and optional date range:
+     ```json
+     {"names": ["Dataset Name 1", "Dataset Name 2"], "from_dt": "2025-06-01", "to_dt": "2025-06-30"}
+     ```
 
-    If new enough:
+  3. The container validates the dataset names against the configured RID mappings
 
-      - subscribe to the redis channel for dataset zip updates
-      - request /dataset_unzip for the dataset
-      - wait for the unzip completion message
+  4. For each dataset, the container checks for existing versions within the date range:
 
-    If not new enough:
+     **If a valid version exists:**
+       - Unzips the dataset if needed
+       - Sends progress updates via WebSocket
 
-      - subscribe to the redis channel for dataset downloads
-      - request /dataset_download for the dataset
-      - wait for the download completion message
-      - request /dataset_get for the dataset
-      - request /dataset_zip for the dataset
-      - request /dataset_delete_raw for the dataset
+     **If no valid version exists:**
+       - Downloads the dataset from Foundry (with batch support for large datasets)
+       - Computes SHA256 checksum
+       - Saves as CSV and creates ZIP archive
+       - Updates metadata file
+       - Sends progress updates via WebSocket
 
-  - Continue with the operation of converting the DB to the database and so on
+  5. The container sends a `final` message with the SHA256 of the processed dataset(s)
+
+  6. External API can then download the files via HTTP:
+     - `GET /dataset/download/csv/{sha256}` for the CSV file
+     - `GET /dataset/download/zip/{sha256}` for the ZIP archive
+
+  7. Continue with the operation of converting the data to the database and so on
 
 # Setup
 
@@ -84,7 +107,7 @@ jwt="eyJhbGciOiJIUzI1NiIs..."
 # Network to connect with other containers and the internet, if not exposing a port
 networks:
   api--fdt-container_net:
-  driver: bridge
+    driver: bridge
 
 # Secrets for the config and datasets
 secrets:
@@ -99,10 +122,10 @@ services:
   fdt-container:
     container_name: project-fdt-container
     build:
-    context: ./foundry-dev-tools-container
-    dockerfile: Dockerfile
+      context: ./foundry-dev-tools-container
+      dockerfile: Dockerfile
     restart: always
-    networks:  # internal port 8000 - only expose a port if you want to access it outside of the Docker network
+    networks:  # internal port 8888 - only expose a port if you want to access it outside of the Docker network
       - api--fdt-container_net
     volumes:
       - ./foundry-dev-tools-container/t3_code:/app/t3_code  # allow for code adjustments
@@ -124,8 +147,12 @@ The following script can be used to test the API endpoints of the Foundry DevToo
 import asyncio
 import websockets
 import json
+import httpx  # for downloading files
 
-DATASET_URL = "ws://project-fdt-container:8000/dataset/get"  # If you expose the port: ws://localhost:8000/dataset/get
+# WebSocket URL for dataset retrieval (note: port 8888)
+DATASET_URL = "ws://project-fdt-container:8888/fdtc-api/dataset/get"
+# If you expose the port: ws://localhost:8888/fdtc-api/dataset/get
+
 DATASET_NAMES = ["Customer Demographics", "Transaction History"]
 
 async def test_websocket():
@@ -133,10 +160,16 @@ async def test_websocket():
         async with websockets.connect(DATASET_URL) as websocket: 
             print("Connected to WebSocket")
             
-            # Send initial request with DATASET_NAMES
-            initial_request = {"names": DATASET_NAMES}
+            # Send initial request with dataset names and optional date range
+            initial_request = {
+                "names": DATASET_NAMES,
+                "from_dt": "2025-06-01",
+                "to_dt": "2025-06-30"
+            }
             await websocket.send(json.dumps(initial_request))
             print(f"Sent initial request: {initial_request}")
+            
+            sha256_result = None
             
             # Listen for responses
             async for message in websocket:
@@ -145,10 +178,86 @@ async def test_websocket():
                 
                 # type final marks the last message in the stream
                 if response.get("type") == "final":
+                    sha256_result = response.get("datasets")
                     break
+                    
+            return sha256_result
             
     except Exception as e:
         print(f"Error: {e}")
+        return None
 
-asyncio.run(test_websocket())
+async def download_dataset(sha256: str):
+    """Download the dataset file after WebSocket workflow completes"""
+    base_url = "http://project-fdt-container:8888/fdtc-api"
+    
+    async with httpx.AsyncClient() as client:
+        # Download CSV
+        csv_response = await client.get(f"{base_url}/dataset/download/csv/{sha256}")
+        if csv_response.status_code == 200:
+            with open(f"{sha256}.csv", "wb") as f:
+                f.write(csv_response.content)
+            print(f"Downloaded: {sha256}.csv")
+        
+        # Or download ZIP
+        zip_response = await client.get(f"{base_url}/dataset/download/zip/{sha256}")
+        if zip_response.status_code == 200:
+            with open(f"{sha256}.zip", "wb") as f:
+                f.write(zip_response.content)
+            print(f"Downloaded: {sha256}.zip")
+
+async def main():
+    sha256 = await test_websocket()
+    if sha256:
+        await download_dataset(sha256)
+
+asyncio.run(main())
+```
+
+## WebSocket Message Types
+
+During the WebSocket workflow, you'll receive messages with the following structure:
+
+```json
+{
+    "type": "update|final|error|keepalive",
+    "success": true,
+    "message": "Description of current status",
+    "datasets": ["sha256_hash"]  // only in final message
+}
+```
+
+- `update` - Progress updates during processing
+- `keepalive` - Heartbeat messages (every 50 seconds) for long-running operations
+- `final` - Operation completed, contains the SHA256 hash(es) of processed datasets
+- `error` - Error occurred during processing
+
+## File Storage Structure
+
+```
+datasets/
+├── metadata/          # Metadata JSON files (by RID)
+│   └── {rid}.json
+├── zipped/            # Compressed datasets (by SHA256)
+│   └── {sha256}.zip
+├── unzipped/          # Uncompressed CSV files (by SHA256)
+│   └── {sha256}.csv
+└── tmp/               # Temporary files during processing
+```
+
+### Metadata File Format
+
+```json
+{
+    "name": "Dataset Name",
+    "rid": "dataset-uuid",
+    "versions": [
+        {
+            "sha256": "a1b2c3d4...",
+            "dates": ["2025-06-15T10:30:00"],
+            "zipped": true,
+            "unzipped": true
+        }
+    ]
+}
 ```
