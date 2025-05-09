@@ -6,6 +6,8 @@
 - Download datasets from Foundry
 - Keep copies of datasets compressed as zip
 - Provide an API to download datasets (via docker network) 
+- Integrate upstream improvements from the [EMD Group Foundry Dev Tools](https://github.com/emdgroup/foundry-dev-tools)
+- Pair with the [t3llscode/foundry-dev-tools-container-client](https://github.com/t3llscode/foundry-dev-tools-container-client) for convenient remote control via WebSockets
 
 ### Technical Details
 
@@ -15,6 +17,11 @@
 - API for dataset management / provisioning
 - Docker network for communication with other containers
 - Internal port: **8888** (accessible via container name on docker network)
+
+### Related Projects
+
+- **EMD Group Foundry Dev Tools** – upstream tooling, documentation, and changelog live at [github.com/emdgroup/foundry-dev-tools](https://github.com/emdgroup/foundry-dev-tools).
+- **Foundry DevTools Container Client** – the [t3llscode/foundry-dev-tools-container-client](https://github.com/t3llscode/foundry-dev-tools-container-client) library can orchestrate this container over WebSockets, providing helper APIs for logging, scheduling refresh windows, and incremental downloads.
 
 ### Endpoints
 
@@ -95,10 +102,10 @@ jwt="eyJhbGciOiJIUzI1NiIs..."
 "prefix"="ri.foundry.main.dataset."
 
 [datasets]
-"Customer Demographics"="12a3b4c5-d6e7-8f90-1a2b-3c4d5e6f7g8h"
+"Customer Demographics"="12a3b4c5-d6e7-8f90-1a2b-3c4d5e6f7g8f"
 "Transaction History"="98f7e6d5-c4b3-2a10-9f8e-7d6c5b4a3210"
 "Product Catalog"="a1b2c3d4-e5f6-7890-a1b2-c3d4e5f67890"
-"Supplier Inventory"="z9y8x7w6-v5u4-3210-z9y8-x7w6v5u4t3s2"
+"Supplier Inventory"="a9b8c7d6-e5f4-3210-f9e8-a7b6c5d4e3f2"
 ```
 
 <b>Step 3:</b> Add the following parts to your `docker-compose.yml`:
