@@ -23,6 +23,36 @@ from t3_code.utility.foundry_utility import FoundryConnection
 DOWNLOAD_BATCHSIZE = 1000000  # Rows per batch, needs id column in dataset
 
 
+def _resolve_dataset_root() -> Path:
+    """Determine where datasets should live inside the container."""
+    env_override = os.environ.get("FDT_DATASET_DIR")
+    if env_override:
+        path = Path(env_override)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    for candidate in ("/app/fdt-container/datasets", "/app/datasets"):
+        path = Path(candidate)
+        if path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+
+    # Fallback that matches legacy deployments
+    fallback = Path("/app/datasets")
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+DATASET_ROOT = _resolve_dataset_root()
+METADATA_DIR = DATASET_ROOT / "metadata"
+UNZIPPED_DIR = DATASET_ROOT / "unzipped"
+ZIPPED_DIR = DATASET_ROOT / "zipped"
+TEMP_DIR = DATASET_ROOT / "tmp"
+
+for directory in (METADATA_DIR, UNZIPPED_DIR, ZIPPED_DIR, TEMP_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
+
+
 logger = logging.getLogger(__name__)
 
 # - - - Full Sequences - - -
@@ -131,7 +161,7 @@ async def get_versions(rid: str, name: str) -> tuple[list[dict], str]:
     ```
     """
 
-    BASE_DIR = Path(f"/app/datasets/metadata/{rid}.json")
+    BASE_DIR = METADATA_DIR / f"{rid}.json"
     try:
         async with asyncio.Lock():
             async with aiofiles.open(BASE_DIR, 'r') as file:
@@ -206,7 +236,7 @@ async def get_first_filtered_version(websocket: WebSocket, rid: str, name: str, 
 
 async def load_datasets(sha256: str) -> pl.DataFrame | None:
 
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    unzipped_path = UNZIPPED_DIR / f"{sha256}.csv"
 
     if not unzipped_path.exists():
         return None
@@ -312,7 +342,7 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
 
                 # Create a temporary file path for writing (only once)
                 if i == 0:
-                    tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
+                    tmp_csv_path = UNZIPPED_DIR / f"tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv"
                     # Write first batch with headers
                     df_batch.to_csv(tmp_csv_path, index=False)
                 else:
@@ -347,7 +377,7 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
             })
 
             # Create a temporary file path for writing
-            tmp_csv_path = Path(f"/app/datasets/unzipped/tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv")
+            tmp_csv_path = UNZIPPED_DIR / f"tmp_{rid}_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.csv"
             with open(tmp_csv_path, 'w', encoding='utf-8') as f:
                 df.to_csv(f, index=False)
 
@@ -361,7 +391,7 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
         sha256 = await asyncio.to_thread(_compute_file_sha256, tmp_csv_path)
 
         # RENAME
-        new_csv_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+        new_csv_path = UNZIPPED_DIR / f"{sha256}.csv"
         new_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
         if new_csv_path.exists():
@@ -449,7 +479,7 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
 #         temp_path = await asyncio.to_thread(_write_dataframe_to_temp_csv, df)
 #         sha256 = await asyncio.to_thread(_compute_file_sha256, temp_path)
 
-#         unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+#         unzipped_path = UNZIPPED_DIR / f"{sha256}.csv"
 #         unzipped_path.parent.mkdir(parents=True, exist_ok=True)
 
 #         if unzipped_path.exists():
@@ -496,7 +526,7 @@ async def download_dataset(websocket: WebSocket, foundry_con: FoundryConnection,
 
 async def add_metadata(name: str, rid: str, versions: list[dict] = []):
 
-    metadata_path = Path(f"/app/datasets/metadata/{rid}.json")
+    metadata_path = METADATA_DIR / f"{rid}.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not metadata_path.exists():
@@ -512,7 +542,7 @@ async def add_version_to_metadata(name: str, rid: str, version: dict) -> bool:
     is_new_created = await add_metadata(name, rid, [version])
     if not is_new_created:
         # If metadata already exists, update it
-        metadata_path = Path(f"/app/datasets/metadata/{rid}.json")
+        metadata_path = METADATA_DIR / f"{rid}.json"
         metadata = json.loads(metadata_path.read_text())
 
         tmp = metadata["versions"]
@@ -594,7 +624,7 @@ async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnectio
 
     print("ABOUT TO GET DATASET", flush=True)
 
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    unzipped_path = UNZIPPED_DIR / f"{sha256}.csv"
     if not unzipped_path.exists():
         print("ERROR4", flush=True)
         raise FileNotFoundError(f"Dataset {rid} with SHA256 {sha256} not found.")
@@ -606,7 +636,7 @@ async def get_single_dataset(websocket: WebSocket, foundry_con: FoundryConnectio
 # - - - Utility Functions - - -
 
 def _write_dataframe_to_temp_csv(df: Any) -> Path:
-    temp_dir = Path("/app/datasets/tmp")
+    temp_dir = TEMP_DIR
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     fd, temp_path = tempfile.mkstemp(dir=temp_dir, suffix=".csv")
@@ -692,9 +722,9 @@ async def _websocket_keepalive(websocket: WebSocket, interval: int = 50) -> None
 
 
 def _unzip_dataset_sync(sha256: str) -> bool:
-    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-    temp_extract_dir = Path(f"/app/datasets/temp_extract_{sha256}")
+    zipped_path = ZIPPED_DIR / f"{sha256}.zip"
+    unzipped_path = UNZIPPED_DIR / f"{sha256}.csv"
+    temp_extract_dir = DATASET_ROOT / f"temp_extract_{sha256}"
 
     if not zipped_path.exists() or zipped_path.suffix != ".zip":
         return False
@@ -726,8 +756,8 @@ def _unzip_dataset_sync(sha256: str) -> bool:
 
 
 def _zip_dataset_sync(sha256: str) -> bool:
-    unzipped_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
-    zipped_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+    unzipped_path = UNZIPPED_DIR / f"{sha256}.csv"
+    zipped_path = ZIPPED_DIR / f"{sha256}.zip"
 
     if not unzipped_path.exists() or unzipped_path.suffix != ".csv":
         return False

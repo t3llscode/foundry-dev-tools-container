@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, WebSocket, WebSocketException, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
-from pathlib import Path
+from fastapi.responses import StreamingResponse
 from time import sleep
 import asyncio
 import aiofiles
 
 import t3_code.utility.functions_dataset as ds
 from t3_code.utility.foundry_utility import FoundryConnection
+from t3_code.utility.functions_dataset import ZIPPED_DIR, UNZIPPED_DIR
 
 router = APIRouter(
     prefix="/dataset",
@@ -53,7 +53,7 @@ CHUNKSIZE = 32 * 1024 * 1024  # 32MB # Allow to provide this in a config file or
 @router.get("/download/zip/{sha256}")
 async def download_zip(sha256: str):
     """Download zipped dataset by SHA256 with streaming"""
-    zip_path = Path(f"/app/datasets/zipped/{sha256}.zip")
+    zip_path = ZIPPED_DIR / f"{sha256}.zip"
     
     if not zip_path.exists():
         raise HTTPException(status_code=404, detail="Zipped dataset not found")
@@ -72,7 +72,7 @@ async def download_zip(sha256: str):
 @router.get("/download/csv/{sha256}")
 async def download_csv(sha256: str):
     """Download unzipped CSV dataset by SHA256 with streaming"""
-    csv_path = Path(f"/app/datasets/unzipped/{sha256}.csv")
+    csv_path = UNZIPPED_DIR / f"{sha256}.csv"
     
     if not csv_path.exists():
         raise HTTPException(status_code=404, detail="CSV dataset not found")
