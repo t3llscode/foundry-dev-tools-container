@@ -1,6 +1,2 @@
 **/__pycache__/
-
 .vscode-server/*
-!.vscode-server/extensions/
-.vscode-server/extensions/*
-!.vscode-server/extensions/extensions.json
