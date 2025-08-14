@@ -123,6 +123,7 @@ class FoundryConnection:
 
         # Create detailed error message for unknown datasets
         if not_found:
-            message += f"Datasets '{'\', \''.join(not_found)}' are unknown. Please only request existing datasets."
+            datasets_str = "', '".join(not_found)
+            message += f"Datasets '{datasets_str}' are unknown. Please only request existing datasets."
 
         return name_rid_pairs, message
