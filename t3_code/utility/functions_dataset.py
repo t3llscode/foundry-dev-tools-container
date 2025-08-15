@@ -19,9 +19,11 @@ from contextlib import suppress
 
 from t3_code.utility.foundry_utility import FoundryConnection
 
+# - - - - - Configuration / Handling Environment - - - - -
 
-DOWNLOAD_BATCHSIZE = 1000000  # Rows per batch, needs id column in dataset
+DOWNLOAD_BATCHSIZE = int(os.environ.get("DOWNLOAD_BATCHSIZE", 1000000))  # Rows per batch, needs id column in dataset
 
+# - - -
 
 def _resolve_dataset_root() -> Path:
     """Determine where datasets should live inside the container."""
@@ -52,6 +54,7 @@ TEMP_DIR = DATASET_ROOT / "tmp"
 for directory in (METADATA_DIR, UNZIPPED_DIR, ZIPPED_DIR, TEMP_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
+# - - -
 
 logger = logging.getLogger(__name__)
 
