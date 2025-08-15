@@ -140,11 +140,18 @@ services:
       - ./foundry-dev-tools-container/.vscode-server:/root/.vscode-server  # faster access to the container
     environment:
       - PYTHONPATH=/app/t3_code
+      - PYTHON_ENV=production  # optional: set to 'development' for more verbose logging and auto-reload
+      - DOWNLOAD_BATCHSIZE=1000000  # optional: adjust batch size for large datasets
     secrets:
       - fdt_config
       - fdt_datasets
     stop_grace_period: 0s
 ```
+
+### Environment Variables
+
+- `PYTHON_ENV` - Set to `production` for optimized performance (default), or `development` for verbose logging and auto-reload on code changes.
+- `DOWNLOAD_BATCHSIZE` - Adjust the number of rows per batch when downloading large datasets (default: 1,000,000). Requires an `id` column in the dataset for batching, as the Foundrys SQL dialect does not support `OFFSET`.
 
 ## Test
 
